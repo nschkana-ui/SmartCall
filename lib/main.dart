@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:record/record.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:path_provider/path_provider.dart';
+import 'dart:io';
+import 'package:intl/intl.dart';
 
 void main() {
   runApp(const DialerApp());
@@ -167,28 +172,106 @@ class VoicemailView extends StatefulWidget {
 
 class _VoicemailViewState extends State<VoicemailView> {
   final AudioPlayer _player = AudioPlayer();
+  final Record _record = Record();
+  
   bool _isPlaying = false;
+  bool _isRecording = false;
   int? _activeTrack;
+  int _recordingDuration = 0;
+  String? _currentRecordingPath;
 
-  final List<Map<String, String>> _messages = [
-    {
-      "name": "आई",
-      "time": "काल, ५:३० PM",
-      "text": "घरी येताना चहा पावडर आणि साखर घेऊन ये, विसरू नकोस.",
-      "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-    },
-    {
-      "name": "+91 98765 43210",
-      "time": "२ दिवस आधी",
-      "text": "नमस्कार, तुमची डिलिव्हरी पार्सल ऑफिसमध्ये आली आहे.",
-      "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
-    },
-  ];
+  late List<Map<String, dynamic>> _messages;
 
   @override
-  void dispose() {
-    _player.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    _messages = [
+      {
+        "name": "आई",
+        "time": "काल, ५:३० PM",
+        "text": "घरी येताना चहा पावडर आणि साखर घेऊन ये, विसरू नकोस.",
+        "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+        "isLive": false,
+      },
+      {
+        "name": "+91 98765 43210",
+        "time": "२ दिवस आधी",
+        "text": "नमस्कार, तुमची डिलिव्हरी पार्सल ऑफिसमध्ये आली आहे.",
+        "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
+        "isLive": false,
+      },
+    ];
+    _requestPermissions();
+  }
+
+  Future<void> _requestPermissions() async {
+    final status = await Permission.microphone.request();
+    if (!status.isGranted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Microphone permission required')),
+      );
+    }
+  }
+
+  Future<void> _startRecording() async {
+    try {
+      if (await _record.hasPermission()) {
+        final dir = await getApplicationDocumentsDirectory();
+        final timestamp = DateTime.now().millisecondsSinceEpoch;
+        final path = '${dir.path}/voicemail_$timestamp.m4a';
+        
+        await _record.start(
+          path: path,
+          encoder: AudioEncoder.aacLc,
+        );
+        
+        setState(() {
+          _isRecording = true;
+          _currentRecordingPath = path;
+          _recordingDuration = 0;
+        });
+
+        // Timer for recording duration
+        Future.doWhile(() async {
+          if (_isRecording) {
+            setState(() => _recordingDuration++);
+            await Future.delayed(const Duration(seconds: 1));
+            return true;
+          }
+          return false;
+        });
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Recording error: $e')),
+      );
+    }
+  }
+
+  Future<void> _stopRecording() async {
+    try {
+      final path = await _record.stop();
+      if (path != null) {
+        setState(() {
+          _isRecording = false;
+          _messages.insert(
+            0,
+            {
+              "name": "आपले रेकॉर्डिंग",
+              "time": DateFormat('hh:mm a').format(DateTime.now()),
+              "text": "रेकॉर्ड केलेला व्हॉईसमेल",
+              "url": path,
+              "isLive": true,
+            },
+          );
+          _recordingDuration = 0;
+        });
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error stopping recording: $e')),
+      );
+    }
   }
 
   void _playAudio(int index, String url) async {
@@ -205,62 +288,112 @@ class _VoicemailViewState extends State<VoicemailView> {
     }
   }
 
+  String _formatDuration(int seconds) {
+    final minutes = seconds ~/ 60;
+    final secs = seconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  void dispose() {
+    _player.dispose();
+    _record.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text("व्हॉईसमेल (AI Voicemail)", style: TextStyle(fontWeight: FontWeight.bold)),
       ),
-      body: ListView.builder(
-        itemCount: _messages.length,
-        itemBuilder: (context, idx) {
-          final item = _messages[idx];
-          final playingThis = _isPlaying && _activeTrack == idx;
-
-          return Card(
-            margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            elevation: 1,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: Padding(
-              padding: const EdgeInsets.all(14.0),
+      body: Column(
+        children: [
+          // Recording Section
+          if (_isRecording)
+            Container(
+              padding: const EdgeInsets.all(16),
+              color: Colors.red.shade100,
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(item["name"]!, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                      Text(item["time"]!, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                    ],
-                  ),
+                  const Text("रेकॉर्डिंग सुरू...", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.red)),
                   const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      "\"${item["text"]!}\"",
-                      style: const TextStyle(fontSize: 14, fontStyle: FontStyle.italic),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
+                  Text(_formatDuration(_recordingDuration), style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 12),
                   Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      IconButton.filled(
-                        onPressed: () => _playAudio(idx, item["url"]!),
-                        icon: Icon(playingThis ? Icons.pause : Icons.play_arrow),
+                      ElevatedButton.icon(
+                        onPressed: _stopRecording,
+                        icon: const Icon(Icons.stop),
+                        label: const Text("थांबवा"),
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
                       ),
-                      const SizedBox(width: 8),
-                      Text(playingThis ? "ऑडिओ वाजत आहे..." : "व्हॉईस मेसेज ऐका"),
                     ],
                   ),
                 ],
               ),
             ),
-          );
-        },
+          // Messages List
+          Expanded(
+            child: ListView.builder(
+              itemCount: _messages.length,
+              itemBuilder: (context, idx) {
+                final item = _messages[idx];
+                final playingThis = _isPlaying && _activeTrack == idx;
+
+                return Card(
+                  margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  elevation: 1,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  child: Padding(
+                    padding: const EdgeInsets.all(14.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(item["name"]!, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                            Text(item["time"]!, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            "\"${item["text"]!}\"",
+                            style: const TextStyle(fontSize: 14, fontStyle: FontStyle.italic),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            IconButton.filled(
+                              onPressed: () => _playAudio(idx, item["url"]!),
+                              icon: Icon(playingThis ? Icons.pause : Icons.play_arrow),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(playingThis ? "ऑडिओ वाजत आहे..." : "व्हॉईस मेसेज ऐका"),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        backgroundColor: _isRecording ? Colors.red : Colors.blue,
+        onPressed: _isRecording ? _stopRecording : _startRecording,
+        child: Icon(_isRecording ? Icons.stop : Icons.mic, color: Colors.white),
       ),
     );
   }
